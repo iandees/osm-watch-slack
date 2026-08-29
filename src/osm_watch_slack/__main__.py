@@ -72,7 +72,7 @@ async def main() -> None:
     store = WatchStore(config.database_path, config.user_watch_cap, config.channel_watch_cap)
     await store.initialize()
 
-    http_client = httpx.AsyncClient(headers={"User-Agent": USER_AGENT})
+    http_client = httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, follow_redirects=True)
 
     consumer = DiffConsumer(
         config.state_path,

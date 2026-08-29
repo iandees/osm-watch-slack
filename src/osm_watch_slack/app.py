@@ -30,6 +30,17 @@ def _format_duration(delta: datetime.timedelta) -> str:
     return f"{minutes} minute{'s' if minutes != 1 else ''}"
 
 
+def _format_ago(delta: datetime.timedelta) -> str:
+    total = int(delta.total_seconds())
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m"
+    if total < 86400:
+        return f"{total // 3600}h {(total % 3600) // 60}m"
+    return f"{total // 86400}d {(total % 86400) // 3600}h"
+
+
 HELP_TEXT = """\
 */osmwatch* - Watch OpenStreetMap changes
 
@@ -127,10 +138,16 @@ def create_app(
                     )
 
             if consumer is not None and consumer.last_sequence is not None:
+                ago = ""
+                if consumer.last_processed_at:
+                    last = datetime.datetime.fromisoformat(
+                        consumer.last_processed_at
+                    )
+                    delta = datetime.datetime.now(datetime.UTC) - last
+                    ago = f" ({_format_ago(delta)} ago)"
                 lines.append("")
                 lines.append(
-                    f"*Overpass:* sequence {consumer.last_sequence},"
-                    f" last processed {consumer.last_processed_at}"
+                    f"*Overpass:* sequence {consumer.last_sequence}{ago}"
                 )
 
             await respond(text="\n".join(lines), response_type="ephemeral")

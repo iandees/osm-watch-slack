@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -161,6 +162,8 @@ class DiffConsumer:
         self.http_client = http_client
         self.base_url = base_url.rstrip("/")
         self.replication_url = replication_url
+        self.last_sequence: int | None = None
+        self.last_processed_at: str | None = None
 
     async def get_sequence(self) -> int:
         """Read sequence number from state file, or fetch current from replication URL."""
@@ -236,6 +239,10 @@ class DiffConsumer:
                 if elements:
                     await callback(elements)
 
+                self.last_sequence = sequence
+                self.last_processed_at = (
+                    datetime.datetime.now(datetime.UTC).isoformat()
+                )
                 await self.save_state(sequence)
                 sequence += 1
                 await asyncio.sleep(60)

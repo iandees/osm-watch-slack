@@ -410,16 +410,18 @@ async def test_migration_v1_to_v2():
         store = WatchStore(tmp_path)
         await store.initialize()
 
-        # Verify schema_version is now 2.
+        # Verify schema_version is now 3.
         cursor = await store._conn.execute("SELECT version FROM schema_version")
         (version,) = await cursor.fetchone()
-        assert version == 2
+        assert version == 3
 
         # Verify the existing watch has notification_count defaulting to 0.
         watches = await store.get_all_active()
         assert len(watches) == 1
         assert watches[0].notification_count == 0
         assert watches[0].filter_text == "old-watch"
+        assert watches[0].last_match_at is None
+        assert watches[0].last_match_element is None
 
         await store.close()
     finally:

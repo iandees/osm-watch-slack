@@ -22,6 +22,8 @@ class WatchRow:
     reminder_sent_at: str | None
     active: bool
     notification_count: int = 0
+    last_match_at: str | None = None
+    last_match_element: str | None = None
 
 
 _SCHEMA_SQL = """\
@@ -36,7 +38,9 @@ CREATE TABLE IF NOT EXISTS watches (
     expires_at TEXT NOT NULL,
     reminder_sent_at TEXT,
     active INTEGER NOT NULL DEFAULT 1,
-    notification_count INTEGER NOT NULL DEFAULT 0
+    notification_count INTEGER NOT NULL DEFAULT 0,
+    last_match_at TEXT,
+    last_match_element TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_watches_active ON watches (active) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_watches_channel ON watches (channel_id, active);
@@ -61,6 +65,8 @@ def _row_to_watch(row: aiosqlite.Row) -> WatchRow:
         reminder_sent_at=row[7],
         active=bool(row[8]),
         notification_count=row[9],
+        last_match_at=row[10] if len(row) > 10 else None,
+        last_match_element=row[11] if len(row) > 11 else None,
     )
 
 
@@ -84,19 +90,27 @@ class WatchStore:
         cursor = await self._conn.execute("SELECT COUNT(*) FROM schema_version")
         (count,) = await cursor.fetchone()  # type: ignore[misc]
         if count == 0:
-            await self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (2,))
+            await self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (3,))
             await self._conn.commit()
             return
 
         # Migrations
         cursor = await self._conn.execute("SELECT version FROM schema_version")
         (version,) = await cursor.fetchone()  # type: ignore[misc]
-        if version == 1:
+        if version < 2:
             await self._conn.execute(
-                "ALTER TABLE watches ADD COLUMN notification_count INTEGER NOT NULL DEFAULT 0"
+                "ALTER TABLE watches ADD COLUMN"
+                " notification_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if version < 3:
+            await self._conn.execute(
+                "ALTER TABLE watches ADD COLUMN last_match_at TEXT"
             )
             await self._conn.execute(
-                "UPDATE schema_version SET version = 2"
+                "ALTER TABLE watches ADD COLUMN last_match_element TEXT"
+            )
+            await self._conn.execute(
+                "UPDATE schema_version SET version = 3"
             )
         await self._conn.commit()
 
@@ -234,6 +248,20 @@ class WatchStore:
         await self._conn.execute(
             "UPDATE watches SET notification_count = notification_count + ? WHERE id = ?",
             (count, watch_id),
+        )
+        await self._conn.commit()
+
+    async def record_match(
+        self,
+        watch_id: int,
+        element_type: str,
+        element_id: int,
+    ) -> None:
+        osm_url = f"https://www.openstreetmap.org/{element_type}/{element_id}"
+        await self._conn.execute(
+            "UPDATE watches SET last_match_at = ?, last_match_element = ? "
+            "WHERE id = ?",
+            (_now_iso(), osm_url, watch_id),
         )
         await self._conn.commit()
 

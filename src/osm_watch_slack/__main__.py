@@ -104,7 +104,7 @@ async def main() -> None:
         config.replication_state_url,
     )
 
-    app = create_app(config, store)
+    app = create_app(config, store, consumer)
     socket_handler = AsyncSocketModeHandler(app, config.slack_app_token)
     rate_limiter = RateLimiter(config.digest_threshold)
     # Persistent cache: uid -> account_created ISO string. Account creation
@@ -153,6 +153,11 @@ async def main() -> None:
 
         if not grouped:
             return
+
+        # Record the last matching element for each watch.
+        for (watch_id, _cid), elems in grouped.items():
+            last = elems[-1]
+            await store.record_match(watch_id, last.element_type, last.element_id)
 
         # Cache changeset comments across this batch.
         comment_cache: dict[int, str | None] = {}

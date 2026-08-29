@@ -8,6 +8,7 @@ from slack_bolt.async_app import AsyncApp
 
 from . import dsl
 from .config import Config
+from .consumer import DiffConsumer
 from .dsl import ParseError, split_command, to_dsl
 from .store import CapExceededError, WatchStore
 
@@ -54,7 +55,9 @@ HELP_TEXT = """\
 """
 
 
-def create_app(config: Config, store: WatchStore) -> AsyncApp:
+def create_app(
+    config: Config, store: WatchStore, consumer: DiffConsumer | None = None
+) -> AsyncApp:
     """Create and configure the Slack Bolt async app."""
     app = AsyncApp(token=config.slack_bot_token)
 
@@ -101,11 +104,14 @@ def create_app(config: Config, store: WatchStore) -> AsyncApp:
             if channel_watches:
                 lines.append("*Channel watches (by notifications sent):*")
                 for i, w in enumerate(channel_watches, 1):
-                    lines.append(
+                    line = (
                         f"#{i} `{w.filter_text}` by <@{w.user_id}>"
                         f" — {w.notification_count} notification"
                         f"{'s' if w.notification_count != 1 else ''}"
                     )
+                    if w.last_match_element:
+                        line += f" | last: <{w.last_match_element}>"
+                    lines.append(line)
             else:
                 lines.append("No active watches in this channel.")
 
@@ -119,6 +125,13 @@ def create_app(config: Config, store: WatchStore) -> AsyncApp:
                         f" {total} total notification"
                         f"{'s' if total != 1 else ''}"
                     )
+
+            if consumer is not None and consumer.last_sequence is not None:
+                lines.append("")
+                lines.append(
+                    f"*Overpass:* sequence {consumer.last_sequence},"
+                    f" last processed {consumer.last_processed_at}"
+                )
 
             await respond(text="\n".join(lines), response_type="ephemeral")
             return

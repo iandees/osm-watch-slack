@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from osm_watch_slack.dsl import parse
-from osm_watch_slack.evaluator import DiffElement, matches
+from osm_watch_slack.dsl import ChangesetTagFilter, TagFilter, WatchFilter, parse
+from osm_watch_slack.evaluator import DiffElement, _changeset_tag_matches, matches
 
 
 class TestTypeMatching:
@@ -216,3 +216,90 @@ class TestCombinedFilters:
     def test_one_tag_fails(self, sample_node_create):
         w = parse("node[amenity=hospital][highway](new)")
         assert not matches(w, sample_node_create)
+
+
+class TestSubstringTagFilter:
+    def test_substring_matches(self):
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="u",
+            old_tags={}, new_tags={"name": "City Hospital North"},
+        )
+        w = parse("node[name~hospital]")
+        assert matches(w, elem)
+
+    def test_substring_case_insensitive(self):
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="u",
+            old_tags={}, new_tags={"name": "CITY HOSPITAL"},
+        )
+        w = parse("node[name~hospital]")
+        assert matches(w, elem)
+
+    def test_substring_no_match(self):
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="u",
+            old_tags={}, new_tags={"name": "City Clinic"},
+        )
+        w = parse("node[name~hospital]")
+        assert not matches(w, elem)
+
+
+class TestChangesetTagFilter:
+    def test_exact_match(self):
+        ct = ChangesetTagFilter("created_by", "JOSM")
+        assert _changeset_tag_matches(ct, {"created_by": "JOSM", "comment": "test"})
+
+    def test_exact_no_match(self):
+        ct = ChangesetTagFilter("created_by", "JOSM")
+        assert not _changeset_tag_matches(ct, {"created_by": "iD"})
+
+    def test_substring_match(self):
+        ct = ChangesetTagFilter("comment", "import", substring=True)
+        assert _changeset_tag_matches(ct, {"comment": "Building import for NYC"})
+
+    def test_substring_case_insensitive(self):
+        ct = ChangesetTagFilter("comment", "import", substring=True)
+        assert _changeset_tag_matches(ct, {"comment": "IMPORT of buildings"})
+
+    def test_key_exists(self):
+        ct = ChangesetTagFilter("source")
+        assert _changeset_tag_matches(ct, {"source": "bing", "comment": "test"})
+
+    def test_key_missing(self):
+        ct = ChangesetTagFilter("source")
+        assert not _changeset_tag_matches(ct, {"comment": "test"})
+
+    def test_empty_tags(self):
+        ct = ChangesetTagFilter("created_by", "JOSM")
+        assert not _changeset_tag_matches(ct, {})
+
+    def test_integrated_with_matches(self):
+        w = WatchFilter(
+            element_type="node",
+            tags=(TagFilter("amenity", "cafe"),),
+            changeset_tags=(ChangesetTagFilter("created_by", "JOSM"),),
+        )
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="u",
+            old_tags={}, new_tags={"amenity": "cafe"},
+            changeset_tags={"created_by": "JOSM"},
+        )
+        assert matches(w, elem)
+
+    def test_integrated_changeset_tag_fails(self):
+        w = WatchFilter(
+            element_type="node",
+            tags=(TagFilter("amenity", "cafe"),),
+            changeset_tags=(ChangesetTagFilter("created_by", "JOSM"),),
+        )
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="u",
+            old_tags={}, new_tags={"amenity": "cafe"},
+            changeset_tags={"created_by": "iD"},
+        )
+        assert not matches(w, elem)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from .dsl import WatchFilter
+from .dsl import ChangesetTagFilter, WatchFilter
 
 
 @dataclass
@@ -17,6 +17,7 @@ class DiffElement:
     new_tags: dict[str, str] = field(default_factory=dict)
     lat: float | None = None
     lon: float | None = None
+    changeset_tags: dict[str, str] = field(default_factory=dict)
     uid: int | None = None
     user_created_at: str | None = None
 
@@ -38,7 +39,11 @@ def matches(watch: WatchFilter, element: DiffElement) -> bool:
             return False
 
     for tag in watch.tags:
-        if not _tag_matches(tag.key, tag.value, element):
+        if not _tag_matches(tag.key, tag.value, tag.substring, element):
+            return False
+
+    for ct in watch.changeset_tags:
+        if not _changeset_tag_matches(ct, element.changeset_tags):
             return False
 
     if watch.bbox is not None:
@@ -68,7 +73,7 @@ def _user_age_matches(max_age: timedelta, element: DiffElement) -> bool:
     return age < max_age
 
 
-def _tag_matches(key: str, value: str | None, element: DiffElement) -> bool:
+def _tag_matches(key: str, value: str | None, substring: bool, element: DiffElement) -> bool:
     old_val = element.old_tags.get(key)
     new_val = element.new_tags.get(key)
 
@@ -81,9 +86,28 @@ def _tag_matches(key: str, value: str | None, element: DiffElement) -> bool:
         if has_old and has_new and old_val == new_val:
             return False
         return True
+    elif substring:
+        # [key~value] — substring match in either old or new tag value
+        return (
+            (new_val is not None and value.lower() in new_val.lower())
+            or (old_val is not None and value.lower() in old_val.lower())
+        )
     else:
         # [key=value] — new state has it OR old state had it (element stops matching)
         return new_val == value or old_val == value
+
+
+def _changeset_tag_matches(ct: ChangesetTagFilter, cs_tags: dict[str, str]) -> bool:
+    if not cs_tags:
+        return False
+    val = cs_tags.get(ct.key)
+    if ct.value is None:
+        return ct.key in cs_tags
+    if val is None:
+        return False
+    if ct.substring:
+        return ct.value.lower() in val.lower()
+    return val == ct.value
 
 
 def _bbox_matches(

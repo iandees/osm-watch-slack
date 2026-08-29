@@ -13,11 +13,26 @@ class ParseError(ValueError):
 class TagFilter:
     key: str
     value: str | None = None
+    substring: bool = False
 
     def __str__(self) -> str:
         if self.value is not None:
-            return f"[{self.key}={self.value}]"
+            op = "~" if self.substring else "="
+            return f"[{self.key}{op}{self.value}]"
         return f"[{self.key}]"
+
+
+@dataclass(frozen=True)
+class ChangesetTagFilter:
+    key: str
+    value: str | None = None
+    substring: bool = False
+
+    def __str__(self) -> str:
+        if self.value is not None:
+            op = "~" if self.substring else "="
+            return "{" + f"{self.key}{op}{self.value}" + "}"
+        return "{" + self.key + "}"
 
 
 @dataclass(frozen=True)
@@ -31,13 +46,17 @@ class WatchFilter:
     osm_uid: int | None = None
     user_age_max: timedelta | None = None
     comment_text: str | None = None
+    changeset_tags: tuple[ChangesetTagFilter, ...] = ()
 
     def to_dict(self) -> dict:
         d: dict = {"element_type": self.element_type}
         if self.element_id is not None:
             d["element_id"] = self.element_id
         if self.tags:
-            d["tags"] = [{"key": t.key, "value": t.value} for t in self.tags]
+            d["tags"] = [
+                {"key": t.key, "value": t.value, "substring": t.substring}
+                for t in self.tags
+            ]
         if self.state is not None:
             d["state"] = self.state
         if self.bbox is not None:
@@ -50,11 +69,23 @@ class WatchFilter:
             d["user_age_max_seconds"] = int(self.user_age_max.total_seconds())
         if self.comment_text is not None:
             d["comment_text"] = self.comment_text
+        if self.changeset_tags:
+            d["changeset_tags"] = [
+                {"key": t.key, "value": t.value, "substring": t.substring}
+                for t in self.changeset_tags
+            ]
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> WatchFilter:
-        tags = tuple(TagFilter(t["key"], t.get("value")) for t in d.get("tags", []))
+        tags = tuple(
+            TagFilter(t["key"], t.get("value"), t.get("substring", False))
+            for t in d.get("tags", [])
+        )
+        cs_tags = tuple(
+            ChangesetTagFilter(t["key"], t.get("value"), t.get("substring", False))
+            for t in d.get("changeset_tags", [])
+        )
         bbox = tuple(d["bbox"]) if d.get("bbox") else None
         user_age_max = None
         if d.get("user_age_max_seconds") is not None:
@@ -69,6 +100,7 @@ class WatchFilter:
             osm_uid=d.get("osm_uid"),
             user_age_max=user_age_max,
             comment_text=d.get("comment_text"),
+            changeset_tags=cs_tags,
         )
 
 
@@ -162,18 +194,20 @@ def parse(text: str) -> WatchFilter:
                 raise ParseError("Expected ')' after element ID")
             advance()
 
-        # Parse tag filters: [key] or [key=value]
+        # Parse tag filters: [key], [key=value], [key~substring]
         while peek() == "[":
             advance()
             key_start = pos
-            while peek() and peek() not in ("=", "]"):
+            while peek() and peek() not in ("=", "~", "]"):
                 advance()
             key = text[key_start:pos].strip()
             if not key:
                 raise ParseError("Empty tag key in filter")
 
             value = None
-            if peek() == "=":
+            substring = False
+            if peek() in ("=", "~"):
+                substring = peek() == "~"
                 advance()
                 val_start = pos
                 while peek() and peek() != "]":
@@ -183,7 +217,34 @@ def parse(text: str) -> WatchFilter:
             if peek() != "]":
                 raise ParseError("Expected ']' to close tag filter")
             advance()
-            tags.append(TagFilter(key, value))
+            tags.append(TagFilter(key, value, substring))
+
+    # Parse changeset tag filters: {key}, {key=value}, {key~substring}
+    changeset_tags: list[ChangesetTagFilter] = []
+    if element_type not in ("note", "changeset_comment"):
+        while peek() == "{":
+            advance()
+            key_start = pos
+            while peek() and peek() not in ("=", "~", "}"):
+                advance()
+            key = text[key_start:pos].strip()
+            if not key:
+                raise ParseError("Empty key in changeset tag filter")
+
+            value = None
+            substring = False
+            if peek() in ("=", "~"):
+                substring = peek() == "~"
+                advance()
+                val_start = pos
+                while peek() and peek() != "}":
+                    advance()
+                value = text[val_start:pos].strip()
+
+            if peek() != "}":
+                raise ParseError("Expected '}' to close changeset tag filter")
+            advance()
+            changeset_tags.append(ChangesetTagFilter(key, value, substring))
 
     # Parse optional parenthesized clauses (order-independent)
     state = None
@@ -309,13 +370,14 @@ def parse(text: str) -> WatchFilter:
     if (
         element_id is None
         and not tags
+        and not changeset_tags
         and bbox is None
         and osm_user is None
         and osm_uid is None
         and user_age_max is None
     ):
         raise ParseError(
-            "At least one of: element ID, tag filter, bbox, user, uid, or user_age is required. "
+            "At least one filter is required. "
             "Fully unfiltered watches are not allowed."
         )
 
@@ -328,6 +390,7 @@ def parse(text: str) -> WatchFilter:
         osm_user=osm_user,
         osm_uid=osm_uid,
         user_age_max=user_age_max,
+        changeset_tags=tuple(changeset_tags),
     )
 
 
@@ -350,6 +413,8 @@ def to_dsl(f: WatchFilter) -> str:
         parts.append(f"({f.element_id})")
     for tag in f.tags:
         parts.append(str(tag))
+    for ct in f.changeset_tags:
+        parts.append(str(ct))
     if f.state is not None:
         parts.append(f"({f.state})")
     if f.bbox is not None:

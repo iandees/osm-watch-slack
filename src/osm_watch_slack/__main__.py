@@ -62,12 +62,12 @@ async def _fetch_user_created_at(
     return cache[uid]
 
 
-async def _fetch_changeset_comment(
+async def _fetch_changeset_tags(
     http_client: httpx.AsyncClient,
     changeset_id: int,
-    cache: dict[int, str | None],
-) -> str | None:
-    """Fetch the comment tag from an OSM changeset, using a per-batch cache."""
+    cache: dict[int, dict[str, str]],
+) -> dict[str, str]:
+    """Fetch all tags from an OSM changeset, using a per-batch cache."""
     if changeset_id in cache:
         return cache[changeset_id]
     try:
@@ -78,16 +78,17 @@ async def _fetch_changeset_comment(
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
         cs = root.find("changeset")
-        comment = None
+        tags: dict[str, str] = {}
         if cs is not None:
             for tag in cs.findall("tag"):
-                if tag.attrib.get("k") == "comment":
-                    comment = tag.attrib.get("v")
-                    break
-        cache[changeset_id] = comment
+                k = tag.attrib.get("k")
+                v = tag.attrib.get("v")
+                if k and v is not None:
+                    tags[k] = v
+        cache[changeset_id] = tags
     except Exception:
-        log.warning("Failed to fetch changeset %d comment", changeset_id, exc_info=True)
-        cache[changeset_id] = None
+        log.warning("Failed to fetch changeset %d tags", changeset_id, exc_info=True)
+        cache[changeset_id] = {}
     return cache[changeset_id]
 
 
@@ -142,6 +143,17 @@ async def main() -> None:
             if wf.user_age_max is not None:
                 needs_user_age = True
 
+        # Populate changeset_tags on elements if any watch uses changeset tag filters.
+        needs_cs_tags = any(wf.changeset_tags for _, _, _, wf in parsed_watches)
+        if needs_cs_tags:
+            cs_tag_cache: dict[int, dict[str, str]] = {}
+            cs_ids = {e.changeset_id for e in elements}
+            for cs_id in cs_ids:
+                tags = await _fetch_changeset_tags(http_client, cs_id, cs_tag_cache)
+                for e in elements:
+                    if e.changeset_id == cs_id:
+                        e.changeset_tags = tags
+
         # Populate user_created_at on elements if any watch needs it.
         if needs_user_age:
             uids = {e.uid for e in elements if e.uid is not None}
@@ -172,14 +184,17 @@ async def main() -> None:
             last = elems[-1]
             await store.record_match(watch_id, last.element_type, last.element_id)
 
-        # Cache changeset comments across this batch.
-        comment_cache: dict[int, str | None] = {}
+        # Cache changeset tags across this batch.
+        cs_tag_batch_cache: dict[int, dict[str, str]] = {}
 
         # Group all matches by watch_id for rate-limiting decisions.
         per_watch: dict[int, list[ChangesetMatch]] = defaultdict(list)
         for (watch_id, changeset_id), elems in grouped.items():
             channel_id, filter_text, watch_filter = watch_meta[watch_id]
-            comment = await _fetch_changeset_comment(http_client, changeset_id, comment_cache)
+            cs_tags = await _fetch_changeset_tags(
+                http_client, changeset_id, cs_tag_batch_cache
+            )
+            comment = cs_tags.get("comment")
             user = elems[0].user if elems else ""
             cm = ChangesetMatch(
                 changeset_id=changeset_id,

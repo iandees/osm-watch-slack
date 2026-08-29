@@ -272,6 +272,63 @@ class TestParseErrors:
             parse("node[name](user_age:<30x)")
 
 
+class TestParseSubstring:
+    def test_element_tag_substring(self):
+        f = parse("node[name~hospital]")
+        assert f.tags[0].key == "name"
+        assert f.tags[0].value == "hospital"
+        assert f.tags[0].substring is True
+
+    def test_element_tag_exact(self):
+        f = parse("node[name=hospital]")
+        assert f.tags[0].substring is False
+
+    def test_element_tag_substring_round_trip(self):
+        text = "node[name~hospital]"
+        assert to_dsl(parse(text)) == text
+
+
+class TestParseChangesetTags:
+    def test_exact_match(self):
+        f = parse("nwr[building]{created_by=JOSM}")
+        assert len(f.changeset_tags) == 1
+        assert f.changeset_tags[0].key == "created_by"
+        assert f.changeset_tags[0].value == "JOSM"
+        assert f.changeset_tags[0].substring is False
+
+    def test_substring_match(self):
+        f = parse("nwr[building]{comment~import}")
+        assert f.changeset_tags[0].key == "comment"
+        assert f.changeset_tags[0].value == "import"
+        assert f.changeset_tags[0].substring is True
+
+    def test_key_only(self):
+        f = parse("nwr[building]{source}")
+        assert f.changeset_tags[0].key == "source"
+        assert f.changeset_tags[0].value is None
+
+    def test_multiple_changeset_tags(self):
+        f = parse("nwr[building]{created_by=JOSM}{source~bing}")
+        assert len(f.changeset_tags) == 2
+
+    def test_changeset_tag_counts_as_filter(self):
+        f = parse("nwr{created_by=JOSM}")
+        assert len(f.changeset_tags) == 1
+        assert f.tags == ()
+
+    def test_round_trip(self):
+        text = "nwr[building]{created_by=JOSM}"
+        assert to_dsl(parse(text)) == text
+
+    def test_round_trip_substring(self):
+        text = "nwr[building]{comment~import}"
+        assert to_dsl(parse(text)) == text
+
+    def test_not_on_notes(self):
+        with pytest.raises(ParseError):
+            parse("note{source=bing}(bbox:1,2,3,4)")
+
+
 class TestRoundTrip:
     def test_simple(self):
         text = "relation(12345)[name]"

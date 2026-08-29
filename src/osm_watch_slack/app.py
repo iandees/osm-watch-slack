@@ -45,7 +45,8 @@ HELP_TEXT = """\
 
 *Optional:* `expires:<duration>` (e.g. `expires:3d`, `expires:2w`). Default 1 week, max 6mo.
 
-*Subcommands:*
+*Commands:*
+- `/osmwatch add <filter> [expires:3d]` — create a watch
 - `/osmwatch list` — active watches in this channel
 - `/osmwatch cancel <id>` — cancel a watch you created
 - `/osmwatch stats` — watch statistics
@@ -146,9 +147,18 @@ def create_app(config: Config, store: WatchStore) -> AsyncApp:
                 )
             return
 
-        # Create watch from DSL
+        # Create watch: /osmwatch add <dsl>
+        if text.startswith("add "):
+            add_text = text[4:].strip()
+        else:
+            await respond(
+                text="Unknown subcommand. Try `/osmwatch help`.",
+                response_type="ephemeral",
+            )
+            return
+
         try:
-            filter_text, expires_delta = split_command(text)
+            filter_text, expires_delta = split_command(add_text)
         except ParseError as e:
             await respond(text=f"Parse error: {e}", response_type="ephemeral")
             return

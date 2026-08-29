@@ -13,6 +13,22 @@ from .store import CapExceededError, WatchStore
 
 logger = logging.getLogger(__name__)
 
+
+def _format_duration(delta: datetime.timedelta) -> str:
+    total_seconds = int(delta.total_seconds())
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+    if days >= 7 and days % 7 == 0:
+        weeks = days // 7
+        return f"{weeks} week{'s' if weeks != 1 else ''}"
+    if days > 0:
+        return f"{days} day{'s' if days != 1 else ''}"
+    if hours > 0:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+
 HELP_TEXT = """\
 */osmwatch* - Watch OpenStreetMap changes
 
@@ -122,8 +138,17 @@ def create_app(config: Config, store: WatchStore) -> AsyncApp:
             await respond(text=str(e), response_type="ephemeral")
             return
 
+        # Join the channel so we can post notifications later.
+        try:
+            await app.client.conversations_join(channel=channel_id)
+        except Exception:
+            pass
+
         await respond(
-            text=f"Watch #{watch.id} created: `{dsl_text}` — expires {watch.expires_at}",
+            text=(
+                f"Watch #{watch.id} created: `{dsl_text}`"
+                f" — expires in {_format_duration(expires_delta)}"
+            ),
             response_type="in_channel",
         )
 

@@ -27,57 +27,40 @@ def format_notification(match: ChangesetMatch) -> dict:
     summary_parts = [f"{count} {action}" for action, count in sorted(action_counts.items())]
     summary = ", ".join(summary_parts) if summary_parts else "changes"
 
-    blocks: list[dict] = []
-
-    # Author and action summary
-    blocks.append({
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": f"*{match.user}* made {summary} in changeset {match.changeset_id}",
-        },
-    })
-
-    # Links section
     osmcha_url = f"https://osmcha.org/changesets/{match.changeset_id}"
     osm_url = f"https://www.openstreetmap.org/changeset/{match.changeset_id}"
-    links = f"<{osmcha_url}|OSMCha> | <{osm_url}|osm.org>"
-    if match.element_id is not None:
-        element_url = f"https://www.openstreetmap.org/{match.element_type}/{match.element_id}"
-        links += f" | <{element_url}|{match.element_type}/{match.element_id}>"
-    blocks.append({
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": links,
-        },
-    })
 
-    # Comment section (truncated to 200 chars)
+    # Main line: User *name* made N action in changeset link (osmcha)
+    text = (
+        f"User *{match.user}* made {summary} in changeset "
+        f"<{osm_url}|{match.changeset_id}> (<{osmcha_url}|osmcha>)"
+    )
+    if match.element_id is not None:
+        element_url = (
+            f"https://www.openstreetmap.org/{match.element_type}/{match.element_id}"
+        )
+        text += f" | <{element_url}|{match.element_type}/{match.element_id}>"
+
     if match.comment is not None:
         comment_text = match.comment
         if len(comment_text) > 200:
             comment_text = comment_text[:200] + "..."
-        blocks.append({
+        text += f"\n_{comment_text}_"
+
+    blocks: list[dict] = [
+        {
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": comment_text,
-            },
-        })
+            "text": {"type": "mrkdwn", "text": text},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Watch: `{match.filter_text}`"},
+            ],
+        },
+    ]
 
-    # Context block
-    blocks.append({
-        "type": "context",
-        "elements": [
-            {
-                "type": "mrkdwn",
-                "text": f"Triggered by watch: `{match.filter_text}`",
-            }
-        ],
-    })
-
-    return {"blocks": blocks}
+    return {"blocks": blocks, "unfurl_links": False, "unfurl_media": False}
 
 
 def format_digest(matches: list[ChangesetMatch], filter_text: str) -> dict:

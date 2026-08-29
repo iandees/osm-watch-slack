@@ -153,6 +153,8 @@ async def main() -> None:
                             channel=cm.channel_id,
                             blocks=payload["blocks"],
                             text=f"OSM change in changeset {cm.changeset_id}",
+                            unfurl_links=payload.get("unfurl_links", True),
+                            unfurl_media=payload.get("unfurl_media", True),
                         )
                         rate_limiter.record(watch_id)
                     except Exception:

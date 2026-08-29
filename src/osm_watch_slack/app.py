@@ -107,10 +107,6 @@ def create_app(
             channel_watches = await store.get_stats(channel_id=channel_id)
             user_stats = await store.get_user_stats()
 
-            if not channel_watches and not user_stats:
-                await respond(text="No active watches.", response_type="ephemeral")
-                return
-
             lines: list[str] = []
             if channel_watches:
                 lines.append("*Channel watches (by notifications sent):*")

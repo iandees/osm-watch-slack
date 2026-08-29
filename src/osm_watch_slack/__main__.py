@@ -13,15 +13,25 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from . import USER_AGENT
 from .app import create_app
+from .changeset_comments import (
+    ChangesetCommentConsumer,
+    ChangesetCommentFilter,
+    comment_matches,
+)
 from .config import Config
 from .consumer import DiffConsumer
 from .dsl import WatchFilter
 from .evaluator import DiffElement, matches
+from .notes import NoteConsumer
 from .notifier import (
     ChangesetMatch,
+    CommentMatch,
+    NoteMatch,
     RateLimiter,
+    format_comment_notification,
     format_digest,
     format_expiry_reminder,
+    format_note_notification,
     format_notification,
 )
 from .store import WatchStore
@@ -104,7 +114,10 @@ async def main() -> None:
         config.replication_state_url,
     )
 
-    app = create_app(config, store, consumer)
+    note_consumer = NoteConsumer(http_client)
+    comment_consumer = ChangesetCommentConsumer(http_client)
+
+    app = create_app(config, store, consumer, note_consumer, comment_consumer)
     socket_handler = AsyncSocketModeHandler(app, config.slack_app_token)
     rate_limiter = RateLimiter(config.digest_threshold)
     # Persistent cache: uid -> account_created ISO string. Account creation
@@ -248,6 +261,117 @@ async def main() -> None:
             except Exception:
                 log.warning("Error in expiry loop", exc_info=True)
 
+    async def note_loop() -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                watches = await store.get_all_active()
+                if not watches:
+                    continue
+
+                note_watches: list[tuple[int, str, str, WatchFilter]] = []
+                for watch in watches:
+                    try:
+                        wf = WatchFilter.from_dict(json.loads(watch.filter_json))
+                    except Exception:
+                        continue
+                    if wf.element_type == "note":
+                        note_watches.append(
+                            (watch.id, watch.channel_id, watch.filter_text, wf)
+                        )
+
+                if not note_watches:
+                    continue
+
+                matches = await note_consumer.poll(note_watches)
+
+                for note, watch_id, channel_id, filter_text in matches:
+                    nm = NoteMatch(
+                        note_id=note.id,
+                        user=note.user,
+                        text=note.text,
+                        url=note.url,
+                        lat=note.lat,
+                        lon=note.lon,
+                        watch_id=watch_id,
+                        channel_id=channel_id,
+                        filter_text=filter_text,
+                    )
+                    payload = format_note_notification(nm)
+                    try:
+                        await app.client.chat_postMessage(
+                            channel=channel_id,
+                            blocks=payload["blocks"],
+                            text=f"New OSM note #{note.id}",
+                            unfurl_links=payload.get("unfurl_links", True),
+                            unfurl_media=payload.get("unfurl_media", True),
+                        )
+                        await store.increment_notification_count(watch_id)
+                    except Exception:
+                        log.warning(
+                            "Failed to send note notification for watch %d note %d",
+                            watch_id,
+                            note.id,
+                            exc_info=True,
+                        )
+            except Exception:
+                log.warning("Error in note loop", exc_info=True)
+
+    async def comment_loop() -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                watches = await store.get_all_active()
+                comment_watches = []
+                for watch in watches:
+                    try:
+                        wf = WatchFilter.from_dict(json.loads(watch.filter_json))
+                    except Exception:
+                        continue
+                    if wf.element_type == "changeset_comment":
+                        comment_watches.append(
+                            (watch.id, watch.channel_id, watch.filter_text, wf)
+                        )
+                if not comment_watches:
+                    continue
+
+                new_comments = await comment_consumer.poll()
+                for comment in new_comments:
+                    for watch_id, channel_id, filter_text, wf in comment_watches:
+                        cf = ChangesetCommentFilter(
+                            osm_user=wf.osm_user,
+                            comment_text=wf.comment_text,
+                            bbox=wf.bbox,
+                        )
+                        if comment_matches(cf, comment):
+                            cm = CommentMatch(
+                                changeset_id=comment.changeset_id,
+                                comment_user=comment.user,
+                                comment_text=comment.text,
+                                changeset_user=comment.changeset_user,
+                                watch_id=watch_id,
+                                channel_id=channel_id,
+                                filter_text=filter_text,
+                            )
+                            payload = format_comment_notification(cm)
+                            try:
+                                await app.client.chat_postMessage(
+                                    channel=channel_id,
+                                    blocks=payload["blocks"],
+                                    text=f"Changeset comment on {comment.changeset_id}",
+                                    unfurl_links=False,
+                                    unfurl_media=False,
+                                )
+                                await store.increment_notification_count(watch_id)
+                            except Exception:
+                                log.warning(
+                                    "Failed to send comment notification for watch %d",
+                                    watch_id,
+                                    exc_info=True,
+                                )
+            except Exception:
+                log.warning("Error in comment loop", exc_info=True)
+
     # Graceful shutdown on SIGTERM / SIGINT.
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
@@ -267,6 +391,8 @@ async def main() -> None:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(socket_handler.start_async(), name="slack-socket")
             tg.create_task(consumer.run(on_diff_batch), name="diff-consumer")
+            tg.create_task(note_loop(), name="note-loop")
+            tg.create_task(comment_loop(), name="comment-loop")
             tg.create_task(expiry_loop(), name="expiry-loop")
             tg.create_task(_shutdown_watcher(), name="shutdown-watcher")
     except* SystemExit:

@@ -145,13 +145,78 @@ class TestParseUserAge:
         assert f.user_age_max == timedelta(days=30)
 
 
+class TestParseNote:
+    def test_note_with_bbox(self):
+        f = parse("note(bbox:40.7,-74.0,40.8,-73.9)")
+        assert f.element_type == "note"
+        assert f.bbox == (40.7, -74.0, 40.8, -73.9)
+        assert f.osm_user is None
+        assert f.element_id is None
+        assert f.tags == ()
+        assert f.state is None
+        assert f.osm_uid is None
+        assert f.user_age_max is None
+
+    def test_note_with_user(self):
+        f = parse("note(user:SomeMapper)")
+        assert f.element_type == "note"
+        assert f.osm_user == "SomeMapper"
+        assert f.bbox is None
+
+    def test_note_with_bbox_and_user(self):
+        f = parse("note(bbox:1,2,3,4)(user:SomeMapper)")
+        assert f.element_type == "note"
+        assert f.bbox == (1.0, 2.0, 3.0, 4.0)
+        assert f.osm_user == "SomeMapper"
+
+    def test_note_without_bbox_or_user_raises(self):
+        with pytest.raises(ParseError, match="at least one"):
+            parse("note")
+
+    def test_note_with_tag_filter_raises(self):
+        with pytest.raises(ParseError, match="Tag filters are not supported"):
+            parse("note[name]")
+
+    def test_note_round_trip_bbox(self):
+        text = "note(bbox:40.7,-74.0,40.8,-73.9)"
+        assert to_dsl(parse(text)) == text
+
+    def test_note_round_trip_user(self):
+        text = "note(user:SomeMapper)"
+        assert to_dsl(parse(text)) == text
+
+    def test_note_round_trip_bbox_and_user(self):
+        text = "note(bbox:1.0,2.0,3.0,4.0)(user:SomeMapper)"
+        assert to_dsl(parse(text)) == text
+
+    def test_note_serialization_round_trip(self):
+        f = parse("note(bbox:40.7,-74.0,40.8,-73.9)(user:SomeMapper)")
+        d = f.to_dict()
+        f2 = WatchFilter.from_dict(d)
+        assert f2.element_type == "note"
+        assert f2.osm_user == "SomeMapper"
+        assert f2.bbox is not None
+
+    def test_note_with_state_raises(self):
+        with pytest.raises(ParseError, match="State filters are not supported"):
+            parse("note(bbox:1,2,3,4)(new)")
+
+    def test_note_with_uid_raises(self):
+        with pytest.raises(ParseError, match="uid filters are not supported"):
+            parse("note(bbox:1,2,3,4)(uid:123)")
+
+    def test_note_with_user_age_raises(self):
+        with pytest.raises(ParseError, match="user_age filters are not supported"):
+            parse("note(bbox:1,2,3,4)(user_age:<30d)")
+
+
 class TestParseErrors:
     def test_empty(self):
         with pytest.raises(ParseError, match="Empty"):
             parse("")
 
     def test_invalid_type(self):
-        with pytest.raises(ParseError, match="element type"):
+        with pytest.raises(ParseError, match="Expected type"):
             parse("building[name]")
 
     def test_no_filter(self):

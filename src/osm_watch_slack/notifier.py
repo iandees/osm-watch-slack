@@ -63,6 +63,43 @@ def format_notification(match: ChangesetMatch) -> dict:
     return {"blocks": blocks, "unfurl_links": False, "unfurl_media": False}
 
 
+@dataclass
+class NoteMatch:
+    note_id: int
+    user: str | None
+    text: str
+    url: str
+    lat: float
+    lon: float
+    watch_id: int
+    channel_id: str
+    filter_text: str
+
+
+def format_note_notification(match: NoteMatch) -> dict:
+    """Slack Block Kit message for a note match."""
+    user_text = f"*{match.user}*" if match.user else "Anonymous"
+    text = f"{user_text} created <{match.url}|note #{match.note_id}>"
+
+    # Truncate note text
+    note_text = match.text
+    if len(note_text) > 200:
+        note_text = note_text[:200] + "..."
+    if note_text:
+        text += f"\n_{note_text}_"
+
+    blocks: list[dict] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Watch: `{match.filter_text}`"},
+            ],
+        },
+    ]
+    return {"blocks": blocks, "unfurl_links": False, "unfurl_media": False}
+
+
 def format_digest(matches: list[ChangesetMatch], filter_text: str) -> dict:
     """Return a Slack Block Kit digest message for multiple changeset matches."""
     count = len(matches)
@@ -116,6 +153,50 @@ class RateLimiter:
         if watch_id not in self._timestamps:
             self._timestamps[watch_id] = []
         self._timestamps[watch_id].append(time.monotonic())
+
+
+@dataclass
+class CommentMatch:
+    changeset_id: int
+    comment_user: str
+    comment_text: str
+    changeset_user: str
+    watch_id: int
+    channel_id: str
+    filter_text: str
+
+
+def format_comment_notification(match: CommentMatch) -> dict:
+    """Return a Slack Block Kit message payload for a changeset comment match."""
+    cs_url = f"https://www.openstreetmap.org/changeset/{match.changeset_id}"
+    osmcha_url = f"https://osmcha.org/changesets/{match.changeset_id}"
+
+    text = (
+        f"*{match.comment_user}* commented on "
+        f"<{cs_url}|changeset {match.changeset_id}> "
+        f"(<{osmcha_url}|osmcha>) by {match.changeset_user}"
+    )
+
+    comment_text = match.comment_text
+    if len(comment_text) > 200:
+        comment_text = comment_text[:200] + "..."
+    if comment_text:
+        text += f"\n_{comment_text}_"
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Watch: `{match.filter_text}`"},
+            ],
+        },
+    ]
+
+    return {"blocks": blocks, "unfurl_links": False, "unfurl_media": False}
 
 
 def format_expiry_reminder(watch_id: int, filter_text: str, expires_at: str) -> dict:

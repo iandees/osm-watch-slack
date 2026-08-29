@@ -30,6 +30,7 @@ class WatchFilter:
     osm_user: str | None = None
     osm_uid: int | None = None
     user_age_max: timedelta | None = None
+    comment_text: str | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"element_type": self.element_type}
@@ -47,6 +48,8 @@ class WatchFilter:
             d["osm_uid"] = self.osm_uid
         if self.user_age_max is not None:
             d["user_age_max_seconds"] = int(self.user_age_max.total_seconds())
+        if self.comment_text is not None:
+            d["comment_text"] = self.comment_text
         return d
 
     @classmethod
@@ -65,10 +68,11 @@ class WatchFilter:
             osm_user=d.get("osm_user"),
             osm_uid=d.get("osm_uid"),
             user_age_max=user_age_max,
+            comment_text=d.get("comment_text"),
         )
 
 
-VALID_TYPES = {"node", "way", "relation", "nwr"}
+VALID_TYPES = {"node", "way", "relation", "nwr", "note", "changeset_comment"}
 VALID_STATES = {"new", "changed", "deleted"}
 
 DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
@@ -107,45 +111,79 @@ def parse(text: str) -> WatchFilter:
             break
     if element_type is None:
         raise ParseError(
-            f"Expected element type (node/way/relation/nwr), got: {text[pos:pos+20]!r}"
+            f"Expected type (node/way/relation/nwr/note/changeset_comment),"
+        f" got: {text[pos:pos+20]!r}"
         )
 
-    # Parse optional element ID: (12345)
-    # Only treat as ID if the char after '(' is a digit
+    # Note watches skip element ID and tag filter parsing
     element_id = None
-    if peek() == "(" and pos + 1 < len(text) and text[pos + 1].isdigit():
-        advance()
-        id_start = pos
-        while peek() and peek().isdigit():
-            advance()
-        element_id = int(text[id_start:pos])
-        if peek() != ")":
-            raise ParseError("Expected ')' after element ID")
-        advance()
-
-    # Parse tag filters: [key] or [key=value]
     tags: list[TagFilter] = []
-    while peek() == "[":
-        advance()
-        key_start = pos
-        while peek() and peek() not in ("=", "]"):
-            advance()
-        key = text[key_start:pos].strip()
-        if not key:
-            raise ParseError("Empty tag key in filter")
 
-        value = None
-        if peek() == "=":
+    comment_text = None
+
+    if element_type == "changeset_comment":
+        # Changeset comment watches: [comment=text] for text filter only
+        if peek() == "[":
+            advance()
+            key_start = pos
+            while peek() and peek() not in ("=", "]"):
+                advance()
+            key = text[key_start:pos].strip()
+            if key != "comment":
+                raise ParseError(
+                    "Changeset comment watches only support [comment=text] filters"
+                )
+            if peek() != "=":
+                raise ParseError("Expected [comment=text] with a value")
             advance()
             val_start = pos
             while peek() and peek() != "]":
                 advance()
-            value = text[val_start:pos].strip()
+            comment_text = text[val_start:pos].strip()
+            if not comment_text:
+                raise ParseError("Empty comment text in filter")
+            if peek() != "]":
+                raise ParseError("Expected ']' to close comment filter")
+            advance()
+    elif element_type == "note":
+        # For notes, reject tag filters early with a clear error
+        if peek() == "[":
+            raise ParseError("Tag filters are not supported for note watches")
+    else:
+        # Parse optional element ID: (12345)
+        # Only treat as ID if the char after '(' is a digit
+        if peek() == "(" and pos + 1 < len(text) and text[pos + 1].isdigit():
+            advance()
+            id_start = pos
+            while peek() and peek().isdigit():
+                advance()
+            element_id = int(text[id_start:pos])
+            if peek() != ")":
+                raise ParseError("Expected ')' after element ID")
+            advance()
 
-        if peek() != "]":
-            raise ParseError("Expected ']' to close tag filter")
-        advance()
-        tags.append(TagFilter(key, value))
+        # Parse tag filters: [key] or [key=value]
+        while peek() == "[":
+            advance()
+            key_start = pos
+            while peek() and peek() not in ("=", "]"):
+                advance()
+            key = text[key_start:pos].strip()
+            if not key:
+                raise ParseError("Empty tag key in filter")
+
+            value = None
+            if peek() == "=":
+                advance()
+                val_start = pos
+                while peek() and peek() != "]":
+                    advance()
+                value = text[val_start:pos].strip()
+
+            if peek() != "]":
+                raise ParseError("Expected ']' to close tag filter")
+            advance()
+            tags.append(TagFilter(key, value))
 
     # Parse optional parenthesized clauses (order-independent)
     state = None
@@ -225,6 +263,48 @@ def parse(text: str) -> WatchFilter:
     if pos < len(text):
         raise ParseError(f"Unexpected trailing text: {text[pos:]!r}")
 
+    # Note-specific validation
+    if element_type == "note":
+        if bbox is None and osm_user is None:
+            raise ParseError(
+                "Note watches require at least one of: bbox, user. "
+                "Fully unfiltered note watches are not allowed."
+            )
+        # These fields don't apply to notes
+        if state is not None:
+            raise ParseError("State filters are not supported for note watches")
+        if osm_uid is not None:
+            raise ParseError("uid filters are not supported for note watches")
+        if user_age_max is not None:
+            raise ParseError("user_age filters are not supported for note watches")
+        return WatchFilter(
+            element_type=element_type,
+            bbox=bbox,
+            osm_user=osm_user,
+        )
+
+    # Changeset comment validation
+    if element_type == "changeset_comment":
+        if comment_text is None and osm_user is None and bbox is None:
+            raise ParseError(
+                "Changeset comment watches require at least one of: "
+                "[comment=text], (user:name), or (bbox:s,w,n,e)."
+            )
+        if state is not None:
+            raise ParseError("State filters are not supported for changeset comment watches")
+        if osm_uid is not None:
+            raise ParseError("uid filters are not supported for changeset comment watches")
+        if user_age_max is not None:
+            raise ParseError(
+                "user_age filters are not supported for changeset comment watches"
+            )
+        return WatchFilter(
+            element_type=element_type,
+            comment_text=comment_text,
+            osm_user=osm_user,
+            bbox=bbox,
+        )
+
     # Validate constraint: at least one filter required
     if (
         element_id is None
@@ -281,6 +361,8 @@ def to_dsl(f: WatchFilter) -> str:
         parts.append(f"(uid:{f.osm_uid})")
     if f.user_age_max is not None:
         parts.append(f"(user_age:{_format_user_age(f.user_age_max)})")
+    if f.comment_text is not None:
+        parts.insert(1, f"[comment={f.comment_text}]")
     return "".join(parts)
 
 

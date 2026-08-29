@@ -7,9 +7,11 @@ import logging
 from slack_bolt.async_app import AsyncApp
 
 from . import dsl
+from .changeset_comments import ChangesetCommentConsumer
 from .config import Config
 from .consumer import DiffConsumer
 from .dsl import ParseError, split_command, to_dsl
+from .notes import NoteConsumer
 from .store import CapExceededError, WatchStore
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ def _format_ago(delta: datetime.timedelta) -> str:
 HELP_TEXT = """\
 */osmwatch* - Watch OpenStreetMap changes
 
-*Type:* `node`, `way`, `relation`, or `nwr` (any type)
+*Type:* `node`, `way`, `relation`, `nwr` (any type), or `note`
 *Filters:* `[tag]`, `[tag=value]`, `(new|changed|deleted)`, `(bbox:s,w,n,e)`
 *User filters:* `(user:name)`, `(uid:12345)`, `(user_age:<30d)`
 
@@ -54,6 +56,13 @@ HELP_TEXT = """\
 - `way[highway](deleted)` — highway deletions
 - `nwr[building](user_age:<30d)` — building edits by new mappers
 - `nwr(user:SomeMapper)` — all edits by a specific user
+- `note(bbox:40.7,-74.0,40.8,-73.9)` — new notes in a bounding box
+- `note(user:SomeMapper)` — notes by a specific user
+- `changeset_comment(user:SomeMapper)` — comments on a user's changesets
+- `changeset_comment[comment=vandalism]` — comments containing a keyword
+
+*Notes/comments:* `note` and `changeset_comment` watches require at least one filter.
+Tag, state, uid, user_age filters do not apply to these types.
 
 *Optional:* `expires:<duration>` (e.g. `expires:3d`, `expires:2w`). Default 1 week, max 6mo.
 
@@ -67,7 +76,11 @@ HELP_TEXT = """\
 
 
 def create_app(
-    config: Config, store: WatchStore, consumer: DiffConsumer | None = None
+    config: Config,
+    store: WatchStore,
+    consumer: DiffConsumer | None = None,
+    note_consumer: NoteConsumer | None = None,
+    comment_consumer: ChangesetCommentConsumer | None = None,
 ) -> AsyncApp:
     """Create and configure the Slack Bolt async app."""
     app = AsyncApp(token=config.slack_bot_token)
@@ -145,6 +158,26 @@ def create_app(
                 lines.append(
                     f"*Overpass:* sequence {consumer.last_sequence}{ago}"
                 )
+
+            if note_consumer is not None and note_consumer.last_note_id > 0:
+                ago = ""
+                if note_consumer.last_processed_at:
+                    last = datetime.datetime.fromisoformat(
+                        note_consumer.last_processed_at
+                    )
+                    delta = datetime.datetime.now(datetime.UTC) - last
+                    ago = f" ({_format_ago(delta)} ago)"
+                lines.append(
+                    f"*Notes:* last note ID {note_consumer.last_note_id}{ago}"
+                )
+
+            if comment_consumer is not None and comment_consumer.last_processed_at:
+                last = datetime.datetime.fromisoformat(
+                    comment_consumer.last_processed_at
+                )
+                delta = datetime.datetime.now(datetime.UTC) - last
+                ago = f" ({_format_ago(delta)} ago)"
+                lines.append(f"*Changeset comments:* last polled{ago}")
 
             await respond(text="\n".join(lines), response_type="ephemeral")
             return

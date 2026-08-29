@@ -5,9 +5,11 @@ from unittest.mock import patch
 from osm_watch_slack.evaluator import DiffElement
 from osm_watch_slack.notifier import (
     ChangesetMatch,
+    NoteMatch,
     RateLimiter,
     format_digest,
     format_expiry_reminder,
+    format_note_notification,
     format_notification,
 )
 
@@ -178,3 +180,69 @@ class TestFormatExpiryReminder:
         assert button["action_id"] == "extend_watch"
         assert button["value"] == "42"
         assert button["text"]["text"] == "Extend 1 week"
+
+
+class TestFormatNoteNotification:
+    def _make_note_match(self, **kwargs) -> NoteMatch:
+        defaults = dict(
+            note_id=5001,
+            user="mapper1",
+            text="Building is missing",
+            url="https://www.openstreetmap.org/note/5001",
+            lat=40.75,
+            lon=-73.95,
+            watch_id=1,
+            channel_id="C123",
+            filter_text="note(bbox:40.7,-74.0,40.8,-73.9)",
+        )
+        defaults.update(kwargs)
+        return NoteMatch(**defaults)
+
+    def test_basic_note_link(self) -> None:
+        result = format_note_notification(self._make_note_match())
+        blocks = result["blocks"]
+        text = blocks[0]["text"]["text"]
+        assert "https://www.openstreetmap.org/note/5001" in text
+        assert "note #5001" in text
+        assert "*mapper1*" in text
+
+    def test_anonymous_user(self) -> None:
+        result = format_note_notification(self._make_note_match(user=None))
+        text = result["blocks"][0]["text"]["text"]
+        assert "Anonymous" in text
+
+    def test_note_text_included(self) -> None:
+        result = format_note_notification(
+            self._make_note_match(text="Fix this road")
+        )
+        text = result["blocks"][0]["text"]["text"]
+        assert "Fix this road" in text
+
+    def test_note_text_truncated(self) -> None:
+        long_text = "A" * 300
+        result = format_note_notification(self._make_note_match(text=long_text))
+        text = result["blocks"][0]["text"]["text"]
+        assert "A" * 200 + "..." in text
+
+    def test_empty_note_text(self) -> None:
+        result = format_note_notification(self._make_note_match(text=""))
+        text = result["blocks"][0]["text"]["text"]
+        # No italicized text line when empty
+        assert "\n_" not in text
+
+    def test_unfurl_disabled(self) -> None:
+        result = format_note_notification(self._make_note_match())
+        assert result["unfurl_links"] is False
+        assert result["unfurl_media"] is False
+
+    def test_context_block_has_filter_text(self) -> None:
+        result = format_note_notification(self._make_note_match())
+        context = [b for b in result["blocks"] if b["type"] == "context"]
+        assert len(context) == 1
+        assert "`note(bbox:40.7,-74.0,40.8,-73.9)`" in context[0]["elements"][0]["text"]
+
+    def test_two_blocks(self) -> None:
+        result = format_note_notification(self._make_note_match())
+        assert len(result["blocks"]) == 2
+        assert result["blocks"][0]["type"] == "section"
+        assert result["blocks"][1]["type"] == "context"

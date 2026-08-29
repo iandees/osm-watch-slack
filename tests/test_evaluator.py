@@ -128,6 +128,86 @@ class TestBboxMatching:
         assert matches(w, elem)
 
 
+class TestNwrMatching:
+    def test_nwr_matches_node(self, sample_node_create):
+        w = parse("nwr[amenity=hospital]")
+        assert matches(w, sample_node_create)
+
+    def test_nwr_matches_way(self, sample_way_delete):
+        w = parse("nwr[highway=residential]")
+        assert matches(w, sample_way_delete)
+
+    def test_nwr_matches_relation(self, sample_relation):
+        w = parse("nwr[name]")
+        assert matches(w, sample_relation)
+
+
+class TestUserMatching:
+    def test_user_matches(self, sample_node_create):
+        w = parse("node[amenity=hospital](user:mapper1)")
+        assert matches(w, sample_node_create)
+
+    def test_user_does_not_match(self, sample_node_create):
+        w = parse("node[amenity=hospital](user:other_mapper)")
+        assert not matches(w, sample_node_create)
+
+
+class TestUidMatching:
+    def test_uid_matches(self, sample_node_create):
+        w = parse("node[amenity=hospital](uid:1001)")
+        assert matches(w, sample_node_create)
+
+    def test_uid_does_not_match(self, sample_node_create):
+        w = parse("node[amenity=hospital](uid:9999)")
+        assert not matches(w, sample_node_create)
+
+    def test_uid_none_does_not_match(self):
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="u",
+            old_tags={}, new_tags={"name": "Foo"},
+            uid=None,
+        )
+        w = parse("node[name](uid:123)")
+        assert not matches(w, elem)
+
+
+class TestUserAgeMatching:
+    def test_young_user_matches(self):
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="newbie",
+            old_tags={}, new_tags={"building": "yes"},
+            user_created_at=created,
+        )
+        w = parse("nwr[building](user_age:<30d)")
+        assert matches(w, elem)
+
+    def test_old_user_does_not_match(self):
+        from datetime import datetime, timedelta, timezone
+        created = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="veteran",
+            old_tags={}, new_tags={"building": "yes"},
+            user_created_at=created,
+        )
+        w = parse("nwr[building](user_age:<30d)")
+        assert not matches(w, elem)
+
+    def test_no_created_at_does_not_match(self):
+        elem = DiffElement(
+            action="create", element_type="node", element_id=1,
+            changeset_id=1, user="unknown",
+            old_tags={}, new_tags={"building": "yes"},
+            user_created_at=None,
+        )
+        w = parse("nwr[building](user_age:<30d)")
+        assert not matches(w, elem)
+
+
 class TestCombinedFilters:
     def test_all_match(self, sample_node_create):
         w = parse("node[amenity=hospital][name](new)(bbox:40.7,-74.0,40.8,-73.9)")

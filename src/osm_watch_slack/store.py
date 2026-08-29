@@ -21,6 +21,7 @@ class WatchRow:
     expires_at: str
     reminder_sent_at: str | None
     active: bool
+    notification_count: int = 0
 
 
 _SCHEMA_SQL = """\
@@ -34,7 +35,8 @@ CREATE TABLE IF NOT EXISTS watches (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     reminder_sent_at TEXT,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    notification_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_watches_active ON watches (active) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_watches_channel ON watches (channel_id, active);
@@ -58,6 +60,7 @@ def _row_to_watch(row: aiosqlite.Row) -> WatchRow:
         expires_at=row[6],
         reminder_sent_at=row[7],
         active=bool(row[8]),
+        notification_count=row[9],
     )
 
 
@@ -81,7 +84,20 @@ class WatchStore:
         cursor = await self._conn.execute("SELECT COUNT(*) FROM schema_version")
         (count,) = await cursor.fetchone()  # type: ignore[misc]
         if count == 0:
-            await self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (1,))
+            await self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (2,))
+            await self._conn.commit()
+            return
+
+        # Migrations
+        cursor = await self._conn.execute("SELECT version FROM schema_version")
+        (version,) = await cursor.fetchone()  # type: ignore[misc]
+        if version == 1:
+            await self._conn.execute(
+                "ALTER TABLE watches ADD COLUMN notification_count INTEGER NOT NULL DEFAULT 0"
+            )
+            await self._conn.execute(
+                "UPDATE schema_version SET version = 2"
+            )
         await self._conn.commit()
 
     async def create(
@@ -213,6 +229,38 @@ class WatchStore:
             (now, watch_id),
         )
         await self._conn.commit()
+
+    async def increment_notification_count(self, watch_id: int, count: int = 1) -> None:
+        await self._conn.execute(
+            "UPDATE watches SET notification_count = notification_count + ? WHERE id = ?",
+            (count, watch_id),
+        )
+        await self._conn.commit()
+
+    async def get_stats(self, channel_id: str | None = None) -> list[WatchRow]:
+        if channel_id is not None:
+            cursor = await self._conn.execute(
+                "SELECT * FROM watches WHERE active = 1 AND channel_id = ? "
+                "ORDER BY notification_count DESC",
+                (channel_id,),
+            )
+        else:
+            cursor = await self._conn.execute(
+                "SELECT * FROM watches WHERE active = 1 "
+                "ORDER BY notification_count DESC"
+            )
+        rows = await cursor.fetchall()
+        return [_row_to_watch(r) for r in rows]
+
+    async def get_user_stats(self) -> list[tuple[str, int, int]]:
+        cursor = await self._conn.execute(
+            "SELECT user_id, COUNT(*) AS active_watch_count, "
+            "SUM(notification_count) AS total_notifications "
+            "FROM watches WHERE active = 1 "
+            "GROUP BY user_id ORDER BY total_notifications DESC"
+        )
+        rows = await cursor.fetchall()
+        return [(row[0], row[1], row[2]) for row in rows]
 
     async def close(self) -> None:
         if self._db is not None:

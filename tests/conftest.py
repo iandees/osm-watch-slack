@@ -17,6 +17,7 @@ def sample_node_create():
         new_tags={"amenity": "hospital", "name": "City Hospital"},
         lat=40.75,
         lon=-73.95,
+        uid=1001,
     )
 
 
@@ -32,6 +33,7 @@ def sample_node_modify():
         new_tags={"name": "New Name", "amenity": "cafe"},
         lat=51.5,
         lon=-0.1,
+        uid=1002,
     )
 
 
@@ -47,6 +49,7 @@ def sample_way_delete():
         new_tags={},
         lat=34.05,
         lon=-118.25,
+        uid=1003,
     )
 
 
@@ -62,4 +65,5 @@ def sample_relation():
         new_tags={"name": "New City", "type": "boundary"},
         lat=40.0,
         lon=-74.0,
+        uid=1004,
     )

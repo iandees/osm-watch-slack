@@ -49,15 +49,17 @@ def _extract_coords(element: ET.Element) -> tuple[float | None, float | None]:
 
 def _parse_osm_element(
     element: ET.Element,
-) -> tuple[str, int, int, str, dict[str, str], float | None, float | None]:
+) -> tuple[str, int, int, str, dict[str, str], float | None, float | None, int | None]:
     """Parse common attributes from a node/way/relation element."""
     element_type = element.tag
     element_id = int(element.attrib["id"])
     changeset_id = int(element.attrib.get("changeset", "0"))
     user = element.attrib.get("user", "")
+    uid_str = element.attrib.get("uid")
+    uid = int(uid_str) if uid_str is not None else None
     tags = _extract_tags(element)
     lat, lon = _extract_coords(element)
-    return element_type, element_id, changeset_id, user, tags, lat, lon
+    return element_type, element_id, changeset_id, user, tags, lat, lon, uid
 
 
 def _find_osm_element(parent: ET.Element) -> ET.Element | None:
@@ -81,7 +83,7 @@ def parse_augmented_diff(xml_bytes: bytes) -> list[DiffElement]:
             osm_elem = _find_osm_element(action)
             if osm_elem is None:
                 continue
-            etype, eid, cid, user, tags, lat, lon = _parse_osm_element(osm_elem)
+            etype, eid, cid, user, tags, lat, lon, uid = _parse_osm_element(osm_elem)
             elements.append(DiffElement(
                 action="create",
                 element_type=etype,
@@ -92,6 +94,7 @@ def parse_augmented_diff(xml_bytes: bytes) -> list[DiffElement]:
                 new_tags=tags,
                 lat=lat,
                 lon=lon,
+                uid=uid,
             ))
 
         elif action_type == "modify":
@@ -104,8 +107,8 @@ def parse_augmented_diff(xml_bytes: bytes) -> list[DiffElement]:
             if old_elem is None or new_elem is None:
                 continue
 
-            _, _, _, _, old_tags, _, _ = _parse_osm_element(old_elem)
-            etype, eid, cid, user, new_tags, lat, lon = _parse_osm_element(new_elem)
+            _, _, _, _, old_tags, _, _, _ = _parse_osm_element(old_elem)
+            etype, eid, cid, user, new_tags, lat, lon, uid = _parse_osm_element(new_elem)
             elements.append(DiffElement(
                 action="modify",
                 element_type=etype,
@@ -116,6 +119,7 @@ def parse_augmented_diff(xml_bytes: bytes) -> list[DiffElement]:
                 new_tags=new_tags,
                 lat=lat,
                 lon=lon,
+                uid=uid,
             ))
 
         elif action_type == "delete":
@@ -126,7 +130,7 @@ def parse_augmented_diff(xml_bytes: bytes) -> list[DiffElement]:
             if old_elem is None:
                 continue
 
-            etype, eid, cid, user, old_tags, lat, lon = _parse_osm_element(old_elem)
+            etype, eid, cid, user, old_tags, lat, lon, uid = _parse_osm_element(old_elem)
             elements.append(DiffElement(
                 action="delete",
                 element_type=etype,
@@ -137,6 +141,7 @@ def parse_augmented_diff(xml_bytes: bytes) -> list[DiffElement]:
                 new_tags={},
                 lat=lat,
                 lon=lon,
+                uid=uid,
             ))
 
     return elements

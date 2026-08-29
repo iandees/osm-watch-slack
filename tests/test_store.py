@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 
+import aiosqlite
 import pytest
 
 from osm_watch_slack.store import CapExceededError, WatchStore
@@ -240,3 +241,186 @@ async def test_list_active_filter_by_user(store: WatchStore):
     result = await store.list_active(user_id="U002")
     assert len(result) == 1
     assert result[0].filter_text == "user2"
+
+
+async def test_increment_notification_count(store: WatchStore):
+    watch = await store.create(
+        user_id="U001",
+        channel_id="C001",
+        filter_text="highway=*",
+        filter_json="{}",
+        expires_at=_future_iso(),
+    )
+    assert watch.notification_count == 0
+
+    await store.increment_notification_count(watch.id, 1)
+    await store.increment_notification_count(watch.id, 5)
+
+    watches = await store.list_active()
+    assert len(watches) == 1
+    assert watches[0].notification_count == 6
+
+
+async def test_get_stats(store: WatchStore):
+    w1 = await store.create(
+        user_id="U001",
+        channel_id="C001",
+        filter_text="low",
+        filter_json="{}",
+        expires_at=_future_iso(),
+    )
+    w2 = await store.create(
+        user_id="U002",
+        channel_id="C001",
+        filter_text="high",
+        filter_json="{}",
+        expires_at=_future_iso(),
+    )
+    w3 = await store.create(
+        user_id="U001",
+        channel_id="C002",
+        filter_text="other-channel",
+        filter_json="{}",
+        expires_at=_future_iso(),
+    )
+
+    await store.increment_notification_count(w1.id, 5)
+    await store.increment_notification_count(w2.id, 20)
+    await store.increment_notification_count(w3.id, 10)
+
+    # All active watches, ordered by notification_count desc
+    stats = await store.get_stats()
+    assert len(stats) == 3
+    assert stats[0].id == w2.id
+    assert stats[0].notification_count == 20
+    assert stats[1].id == w3.id
+    assert stats[1].notification_count == 10
+    assert stats[2].id == w1.id
+    assert stats[2].notification_count == 5
+
+    # Filtered by channel
+    ch1_stats = await store.get_stats(channel_id="C001")
+    assert len(ch1_stats) == 2
+    assert ch1_stats[0].id == w2.id
+    assert ch1_stats[1].id == w1.id
+
+
+async def test_get_user_stats(store: WatchStore):
+    w1 = await store.create(
+        user_id="U001",
+        channel_id="C001",
+        filter_text="watch1",
+        filter_json="{}",
+        expires_at=_future_iso(),
+    )
+    w2 = await store.create(
+        user_id="U001",
+        channel_id="C002",
+        filter_text="watch2",
+        filter_json="{}",
+        expires_at=_future_iso(),
+    )
+    w3 = await store.create(
+        user_id="U002",
+        channel_id="C001",
+        filter_text="watch3",
+        filter_json="{}",
+        expires_at=_future_iso(),
+    )
+
+    await store.increment_notification_count(w1.id, 10)
+    await store.increment_notification_count(w2.id, 20)
+    await store.increment_notification_count(w3.id, 5)
+
+    user_stats = await store.get_user_stats()
+    assert len(user_stats) == 2
+    # U001 has 30 total notifications across 2 watches
+    assert user_stats[0] == ("U001", 2, 30)
+    # U002 has 5 total notifications across 1 watch
+    assert user_stats[1] == ("U002", 1, 5)
+
+
+async def test_migration_v1_to_v2():
+    """Create a v1 schema manually, then verify WatchStore.initialize() migrates it."""
+    db_path = ":memory:"
+    # Build a v1 database by hand (no notification_count column).
+    db = await aiosqlite.connect(db_path)
+    await db.executescript(
+        """\
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (1);
+        CREATE TABLE watches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            filter_text TEXT NOT NULL,
+            filter_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            reminder_sent_at TEXT,
+            active INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO watches (user_id, channel_id, filter_text, filter_json,
+                             created_at, expires_at, active)
+        VALUES ('U001', 'C001', 'old-watch', '{}',
+                '2025-01-01T00:00:00', '2099-01-01T00:00:00', 1);
+        """
+    )
+    await db.commit()
+
+    # We need to use a file-backed DB because :memory: with a new connection
+    # won't share data. Use the shared cache URI instead.
+    await db.close()
+
+    # Use a temp file approach for the migration test.
+    import os
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        tmp_path = f.name
+
+    try:
+        # Re-create v1 database on disk.
+        db = await aiosqlite.connect(tmp_path)
+        await db.executescript(
+            """\
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (1);
+            CREATE TABLE watches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                filter_text TEXT NOT NULL,
+                filter_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                reminder_sent_at TEXT,
+                active INTEGER NOT NULL DEFAULT 1
+            );
+            INSERT INTO watches (user_id, channel_id, filter_text, filter_json,
+                                 created_at, expires_at, active)
+            VALUES ('U001', 'C001', 'old-watch', '{}',
+                    '2025-01-01T00:00:00', '2099-01-01T00:00:00', 1);
+            """
+        )
+        await db.commit()
+        await db.close()
+
+        # Now open via WatchStore and initialize -- should migrate.
+        store = WatchStore(tmp_path)
+        await store.initialize()
+
+        # Verify schema_version is now 2.
+        cursor = await store._conn.execute("SELECT version FROM schema_version")
+        (version,) = await cursor.fetchone()
+        assert version == 2
+
+        # Verify the existing watch has notification_count defaulting to 0.
+        watches = await store.get_all_active()
+        assert len(watches) == 1
+        assert watches[0].notification_count == 0
+        assert watches[0].filter_text == "old-watch"
+
+        await store.close()
+    finally:
+        os.unlink(tmp_path)

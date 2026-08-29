@@ -29,6 +29,29 @@ from .store import WatchStore
 log = logging.getLogger("osm_watch_slack")
 
 
+async def _fetch_user_created_at(
+    http_client: httpx.AsyncClient,
+    uid: int,
+    cache: dict[int, str | None],
+) -> str | None:
+    """Fetch account creation date for an OSM user, using a persistent cache."""
+    if uid in cache:
+        return cache[uid]
+    try:
+        resp = await http_client.get(
+            f"https://api.openstreetmap.org/api/0.6/user/{uid}.json",
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        created = data.get("user", {}).get("account_created")
+        cache[uid] = created
+    except Exception:
+        log.warning("Failed to fetch user %d info", uid, exc_info=True)
+        cache[uid] = None
+    return cache[uid]
+
+
 async def _fetch_changeset_comment(
     http_client: httpx.AsyncClient,
     changeset_id: int,
@@ -84,26 +107,49 @@ async def main() -> None:
     app = create_app(config, store)
     socket_handler = AsyncSocketModeHandler(app, config.slack_app_token)
     rate_limiter = RateLimiter(config.digest_threshold)
+    # Persistent cache: uid -> account_created ISO string. Account creation
+    # dates never change, so this cache is valid for the process lifetime.
+    user_created_cache: dict[int, str | None] = {}
 
     async def on_diff_batch(elements: list[DiffElement]) -> None:
         watches = await store.get_all_active()
         if not watches:
             return
 
+        # Check if any watch uses user_age filter — only then do we need lookups.
+        parsed_watches: list[tuple[int, str, str, WatchFilter]] = []
+        needs_user_age = False
+        for watch in watches:
+            try:
+                wf = WatchFilter.from_dict(json.loads(watch.filter_json))
+            except Exception:
+                log.warning("Skipping watch %d with invalid filter_json", watch.id)
+                continue
+            parsed_watches.append((watch.id, watch.channel_id, watch.filter_text, wf))
+            if wf.user_age_max is not None:
+                needs_user_age = True
+
+        # Populate user_created_at on elements if any watch needs it.
+        if needs_user_age:
+            uids = {e.uid for e in elements if e.uid is not None}
+            for uid in uids:
+                created = await _fetch_user_created_at(
+                    http_client, uid, user_created_cache
+                )
+                if created:
+                    for e in elements:
+                        if e.uid == uid:
+                            e.user_created_at = created
+
         # Build (watch_id, changeset_id) -> list[DiffElement] grouping.
         grouped: dict[tuple[int, int], list[DiffElement]] = defaultdict(list)
         watch_meta: dict[int, tuple[str, str, WatchFilter]] = {}
 
-        for watch in watches:
-            try:
-                watch_filter = WatchFilter.from_dict(json.loads(watch.filter_json))
-            except Exception:
-                log.warning("Skipping watch %d with invalid filter_json", watch.id)
-                continue
-            watch_meta[watch.id] = (watch.channel_id, watch.filter_text, watch_filter)
+        for watch_id, channel_id, filter_text, watch_filter in parsed_watches:
+            watch_meta[watch_id] = (channel_id, filter_text, watch_filter)
             for element in elements:
                 if matches(watch_filter, element):
-                    grouped[(watch.id, element.changeset_id)].append(element)
+                    grouped[(watch_id, element.changeset_id)].append(element)
 
         if not grouped:
             return
@@ -135,6 +181,7 @@ async def main() -> None:
             channel_id = changeset_matches[0].channel_id
             filter_text = changeset_matches[0].filter_text
 
+            sent_count = 0
             if rate_limiter.should_digest(watch_id):
                 payload = format_digest(changeset_matches, filter_text)
                 try:
@@ -143,6 +190,7 @@ async def main() -> None:
                         blocks=payload["blocks"],
                         text=f"{len(changeset_matches)} changesets matched watch",
                     )
+                    sent_count = len(changeset_matches)
                 except Exception:
                     log.warning("Failed to send digest for watch %d", watch_id, exc_info=True)
             else:
@@ -157,6 +205,7 @@ async def main() -> None:
                             unfurl_media=payload.get("unfurl_media", True),
                         )
                         rate_limiter.record(watch_id)
+                        sent_count += 1
                     except Exception:
                         log.warning(
                             "Failed to send notification for watch %d changeset %d",
@@ -164,6 +213,8 @@ async def main() -> None:
                             cm.changeset_id,
                             exc_info=True,
                         )
+            if sent_count:
+                await store.increment_notification_count(watch_id, sent_count)
 
     async def expiry_loop() -> None:
         while True:

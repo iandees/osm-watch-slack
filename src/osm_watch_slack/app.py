@@ -32,20 +32,24 @@ def _format_duration(delta: datetime.timedelta) -> str:
 HELP_TEXT = """\
 */osmwatch* - Watch OpenStreetMap changes
 
-*DSL grammar:*
-`<type>[<id>]?[<tag-filter>]*(new|changed|deleted)?(bbox:s,w,n,e)?`
+*Type:* `node`, `way`, `relation`, or `nwr` (any type)
+*Filters:* `[tag]`, `[tag=value]`, `(new|changed|deleted)`, `(bbox:s,w,n,e)`
+*User filters:* `(user:name)`, `(uid:12345)`, `(user_age:<30d)`
 
 *Examples:*
-- `relation(12345)[name]` - watch a specific relation with a name tag
-- `node[amenity=hospital](new)(bbox:40.7,-74.0,40.8,-73.9)` - new hospitals in a bbox
-- `way[highway](deleted)` - deleted highways
+- `relation(12345)[name]` — name changes on a specific relation
+- `node[amenity=hospital](new)(bbox:40.7,-74.0,40.8,-73.9)` — new hospitals in a bbox
+- `way[highway](deleted)` — highway deletions
+- `nwr[building](user_age:<30d)` — building edits by new mappers
+- `nwr(user:SomeMapper)` — all edits by a specific user
 
-*Optional:* append `expires:<duration>` (e.g. `expires:3d`, `expires:2w`). Default is 1 week.
+*Optional:* `expires:<duration>` (e.g. `expires:3d`, `expires:2w`). Default 1 week, max 6mo.
 
 *Subcommands:*
-- `/osmwatch list` - list active watches in this channel
-- `/osmwatch cancel <id>` - cancel a watch you created
-- `/osmwatch help` - show this help
+- `/osmwatch list` — active watches in this channel
+- `/osmwatch cancel <id>` — cancel a watch you created
+- `/osmwatch stats` — watch statistics
+- `/osmwatch help` — this help
 """
 
 
@@ -80,6 +84,41 @@ def create_app(config: Config, store: WatchStore) -> AsyncApp:
                 lines.append(
                     f"*#{w.id}* `{w.filter_text}` by <@{w.user_id}> - expires {w.expires_at}"
                 )
+            await respond(text="\n".join(lines), response_type="ephemeral")
+            return
+
+        # Stats
+        if text == "stats":
+            channel_watches = await store.get_stats(channel_id=channel_id)
+            user_stats = await store.get_user_stats()
+
+            if not channel_watches and not user_stats:
+                await respond(text="No active watches.", response_type="ephemeral")
+                return
+
+            lines: list[str] = []
+            if channel_watches:
+                lines.append("*Channel watches (by notifications sent):*")
+                for i, w in enumerate(channel_watches, 1):
+                    lines.append(
+                        f"#{i} `{w.filter_text}` by <@{w.user_id}>"
+                        f" — {w.notification_count} notification"
+                        f"{'s' if w.notification_count != 1 else ''}"
+                    )
+            else:
+                lines.append("No active watches in this channel.")
+
+            if user_stats:
+                lines.append("")
+                lines.append("*Top users (all channels):*")
+                for uid, watch_count, total in user_stats:
+                    lines.append(
+                        f"<@{uid}> — {watch_count} watch"
+                        f"{'es' if watch_count != 1 else ''},"
+                        f" {total} total notification"
+                        f"{'s' if total != 1 else ''}"
+                    )
+
             await respond(text="\n".join(lines), response_type="ephemeral")
             return
 

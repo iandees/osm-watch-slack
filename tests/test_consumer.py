@@ -36,6 +36,18 @@ class TestParseAugmentedDiff:
         elem = mixed_elements[0]
         assert elem.old_tags == {}
 
+    def test_create_uid(self, mixed_elements):
+        elem = mixed_elements[0]
+        assert elem.uid == 1001
+
+    def test_modify_uid(self, mixed_elements):
+        elem = mixed_elements[1]
+        assert elem.uid == 1002
+
+    def test_delete_uid(self, mixed_elements):
+        elem = mixed_elements[2]
+        assert elem.uid == 1003
+
     def test_modify_action(self, mixed_elements):
         elem = mixed_elements[1]
         assert elem.action == "modify"

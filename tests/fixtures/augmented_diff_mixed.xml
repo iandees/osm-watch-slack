@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osmAugmentedDiff version="0.6">
+  <action type="create">
+    <node id="100" changeset="1000" user="mapper1" lat="40.75" lon="-73.95">
+      <tag k="amenity" v="cafe"/>
+      <tag k="name" v="Corner Coffee"/>
+      <tag k="cuisine" v="coffee_shop"/>
+    </node>
+  </action>
+  <action type="modify">
+    <old>
+      <node id="200" changeset="2000" user="mapper2" lat="51.5" lon="-0.1">
+        <tag k="name" v="Old Name"/>
+        <tag k="amenity" v="restaurant"/>
+      </node>
+    </old>
+    <new>
+      <node id="200" changeset="2001" user="mapper2" lat="51.5" lon="-0.1">
+        <tag k="name" v="New Name"/>
+        <tag k="amenity" v="restaurant"/>
+      </node>
+    </new>
+  </action>
+  <action type="delete">
+    <old>
+      <way id="300" changeset="3000" user="mapper3">
+        <bounds minlat="34.0" minlon="-118.3" maxlat="34.1" maxlon="-118.2"/>
+        <tag k="highway" v="residential"/>
+        <tag k="name" v="Elm Street"/>
+      </way>
+    </old>
+  </action>
+</osmAugmentedDiff>
